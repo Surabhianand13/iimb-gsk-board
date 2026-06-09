@@ -183,7 +183,9 @@
 <div class="toast" id="toast"></div>
 
 <script>
+  // Clear any old setup data
   localStorage.removeItem('gsk_script_url');
+
   const SCRIPT_URL = 'https://script.google.com/a/macros/solvvai.com/s/AKfycbwver2nFQURb0av4OFs_iq3HOafUCcbOnfgSUdjoaDICm1uQ34cJqMzZwWB08i6ofFh8Q/exec';
 
   const EMOJIS = ['🌸','🌺','💫','🌟','✨','🦋','🌈','💐','🌻','🌙'];
@@ -222,17 +224,49 @@
     const t = document.getElementById('toast');
     t.textContent = msg;
     t.classList.add('show');
-    setTimeout(() => t.classList.remove('show'), 2800);
+    setTimeout(() => t.classList.remove('show'), 3000);
+  }
+
+  // ── All requests use JSONP to avoid CORS ──
+  function callScript(params) {
+    return new Promise((resolve, reject) => {
+      const cbName = 'cb_' + Date.now();
+      const script = document.createElement('script');
+      const timeout = setTimeout(() => {
+        delete window[cbName];
+        document.body.removeChild(script);
+        reject(new Error('Request timed out'));
+      }, 15000);
+
+      window[cbName] = function(data) {
+        clearTimeout(timeout);
+        delete window[cbName];
+        document.body.removeChild(script);
+        resolve(data);
+      };
+
+      const query = Object.entries({ ...params, callback: cbName })
+        .map(([k, v]) => encodeURIComponent(k) + '=' + encodeURIComponent(v))
+        .join('&');
+
+      script.src = SCRIPT_URL + '?' + query;
+      script.onerror = () => {
+        clearTimeout(timeout);
+        delete window[cbName];
+        reject(new Error('Network error'));
+      };
+      document.body.appendChild(script);
+    });
   }
 
   async function fetchPosts() {
     try {
-      const res = await fetch(`${SCRIPT_URL}?action=getPosts`);
-      const data = await res.json();
+      const data = await callScript({ action: 'getPosts' });
       posts = data.posts || [];
       render();
     } catch(e) {
-      document.getElementById('postsList').innerHTML = '<div class="empty"><div class="empty-icon">⚠️</div><p>Could not load posts. Check your connection.</p></div>';
+      document.getElementById('postsList').innerHTML =
+        '<div class="empty"><div class="empty-icon">⚠️</div><p>Could not load posts. Check your connection and try refreshing.</p></div>';
     }
   }
 
@@ -246,19 +280,17 @@
     btn.disabled = true; btn.textContent = 'Adding...';
 
     try {
-      const res = await fetch(SCRIPT_URL, {
-        method: 'POST',
-        body: JSON.stringify({ action: 'addPost', name, url })
-      });
-      const data = await res.json();
+      const data = await callScript({ action: 'addPost', name, url });
       if (data.success) {
         document.getElementById('urlInput').value = '';
         showToast('✅ Post added!');
         await fetchPosts();
       } else {
-        showToast('❌ Error: ' + (data.error || 'Unknown'));
+        showToast('❌ ' + (data.error || 'Something went wrong'));
       }
-    } catch(e) { showToast('❌ Network error. Try again.'); }
+    } catch(e) {
+      showToast('❌ Network error. Please try again.');
+    }
 
     btn.disabled = false; btn.textContent = 'Add';
   }
@@ -266,10 +298,12 @@
   async function deletePost(id) {
     if (!confirm('Remove this post?')) return;
     try {
-      await fetch(SCRIPT_URL, { method: 'POST', body: JSON.stringify({ action: 'deletePost', id }) });
+      await callScript({ action: 'deletePost', id });
       showToast('🗑️ Post removed.');
       await fetchPosts();
-    } catch(e) { showToast('❌ Could not remove post.'); }
+    } catch(e) {
+      showToast('❌ Could not remove post.');
+    }
   }
 
   function toggleReacted(id) {
@@ -284,7 +318,8 @@
   }
 
   function render() {
-    document.getElementById('countPill').textContent = posts.length + ' post' + (posts.length !== 1 ? 's' : '') + ' · last 3 days';
+    document.getElementById('countPill').textContent =
+      posts.length + ' post' + (posts.length !== 1 ? 's' : '') + ' · last 3 days';
     const list = document.getElementById('postsList');
 
     if (!posts.length) {
@@ -307,7 +342,8 @@
       html += `<div class="day-label">${lbl}</div>`;
       groups[lbl].forEach((p, i) => {
         const pos = i + 1;
-        const medal = pos === 1 ? '🥇' : pos === 2 ? '🥈' : pos === 3 ? '🥉' : `<span style="font-size:0.85rem;font-weight:800;color:#4B0082;">#${pos}</span>`;
+        const medal = pos === 1 ? '🥇' : pos === 2 ? '🥈' : pos === 3 ? '🥉' :
+          `<span style="font-size:0.85rem;font-weight:800;color:#4B0082;">#${pos}</span>`;
         const reacted = reactedIds.includes(p.id);
         html += `
         <div class="post-card">
