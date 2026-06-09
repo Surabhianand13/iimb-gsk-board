@@ -196,9 +196,20 @@
     /^https:\/\/lnkd\.in\//
   ];
 
+  // Persistent browser token — ties posts to this device for delete auth
+  function getOwnerToken() {
+    let token = localStorage.getItem('owner_token');
+    if (!token) {
+      token = crypto.randomUUID();
+      localStorage.setItem('owner_token', token);
+    }
+    return token;
+  }
+
   const EMOJIS = ['🌸','🌺','💫','🌟','✨','🦋','🌈','💐','🌻','🌙'];
   let posts = [];
   let reactedIds = JSON.parse(localStorage.getItem('reacted_ids') || '[]');
+  const ownerToken = getOwnerToken();
 
   function saveReacted() { localStorage.setItem('reacted_ids', JSON.stringify(reactedIds)); }
 
@@ -239,7 +250,7 @@
     const cutoff = Date.now() - 3 * 24 * 60 * 60 * 1000;
     const { data, error } = await db
       .from('posts')
-      .select('*')
+      .select('id, name, url, ts, owner_token')
       .gte('ts', cutoff)
       .order('ts', { ascending: true });
 
@@ -250,9 +261,6 @@
     }
     posts = data || [];
     render();
-
-    // clean old posts
-    await db.from('posts').delete().lt('ts', cutoff);
   }
 
   async function addPost() {
@@ -266,21 +274,18 @@
       showToast('Please paste a valid LinkedIn post URL!'); return;
     }
 
-    // rate limit check
-    const todayStart = new Date(); todayStart.setHours(0,0,0,0);
-    const { data: existing } = await db.from('posts').select('id').gte('ts', todayStart.getTime());
-    const totalToday = (existing || []).length;
-    const nameToday = (existing || []).filter(r => r.name && r.name.toLowerCase() === name.toLowerCase()).length;
-    if (totalToday >= 30) { showToast('Daily post limit reached. Try again tomorrow.'); return; }
-    if (nameToday >= 2) { showToast('You have already added 2 posts today.'); return; }
-
     const btn = document.getElementById('addBtn');
     btn.disabled = true; btn.textContent = 'Adding...';
 
-    const { error } = await db.from('posts').insert({ name, url, ts: Date.now() });
+    const { data, error } = await db.rpc('insert_post', {
+      p_name: name,
+      p_url: url,
+      p_ts: Date.now(),
+      p_owner_token: ownerToken
+    });
 
-    if (error) {
-      showToast('❌ Could not add post. Try again.');
+    if (error || (data && data.error)) {
+      showToast('❌ ' + (data?.error || 'Could not add post. Try again.'));
     } else {
       document.getElementById('urlInput').value = '';
       showToast('✅ Post added!');
@@ -292,9 +297,16 @@
 
   async function deletePost(id) {
     if (!confirm('Remove this post?')) return;
-    await db.from('posts').delete().eq('id', id);
-    showToast('🗑️ Post removed.');
-    await fetchPosts();
+    const { data, error } = await db.rpc('delete_post', {
+      p_id: id,
+      p_owner_token: ownerToken
+    });
+    if (error || (data && data.error)) {
+      showToast('❌ ' + (data?.error || 'Could not remove post.'));
+    } else {
+      showToast('🗑️ Post removed.');
+      await fetchPosts();
+    }
   }
 
   function toggleReacted(id) {
@@ -335,6 +347,9 @@
         const medal = pos === 1 ? '🥇' : pos === 2 ? '🥈' : pos === 3 ? '🥉' :
           `<span style="font-size:0.85rem;font-weight:800;color:#4B0082;">#${pos}</span>`;
         const reacted = reactedIds.includes(p.id);
+        const isOwner = p.owner_token === ownerToken;
+        // XSS fix: only allow https:// URLs in href
+        const safeUrl = /^https:\/\//i.test(p.url) ? p.url : '#';
         html += `
         <div class="post-card">
           <div style="min-width:26px;text-align:center;font-size:1.1rem;flex-shrink:0;">${medal}</div>
@@ -348,8 +363,8 @@
               onclick="toggleReacted(${p.id})">
               ${reacted ? '✅ Reacted' : '⏳ To React'}
             </button>
-            <a href="${esc(p.url)}" target="_blank" class="btn-open">👍 Open</a>
-            <button class="del-btn" onclick="deletePost(${p.id})" title="Remove">✕</button>
+            <a href="${esc(safeUrl)}" target="_blank" rel="noopener noreferrer" class="btn-open">👍 Open</a>
+            ${isOwner ? `<button class="del-btn" onclick="deletePost(${p.id})" title="Remove">✕</button>` : ''}
           </div>
         </div>`;
       });
