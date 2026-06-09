@@ -4,7 +4,6 @@
 
 const SHEET_NAME = 'Posts';
 
-// ── Spam Filter Config ──────────────────────────────────────
 const MIN_NAME_LENGTH = 2;
 const MAX_NAME_LENGTH = 50;
 const MAX_POSTS_PER_DAY = 30;
@@ -18,100 +17,94 @@ const LINKEDIN_PATTERNS = [
 ];
 
 const BLOCKED_NAME_WORDS = ['test', 'spam', 'bot', 'admin', 'null', 'undefined', 'script'];
-// ────────────────────────────────────────────────────────────
 
 function doGet(e) {
-  const action = e.parameter.action;
-  const callback = e.parameter.callback; // JSONP callback name
-
-  let result;
   try {
+    const params = (e && e.parameter) ? e.parameter : {};
+    const action = params.action || 'getPosts';
+    const callback = params.callback || '';
+
+    let result;
     if (action === 'getPosts') {
       result = getPosts();
     } else if (action === 'addPost') {
-      const name = e.parameter.name || '';
-      const url = e.parameter.url || '';
-      result = addPost(name, url);
+      result = addPost(params.name || '', params.url || '');
     } else if (action === 'deletePost') {
-      const id = e.parameter.id || '';
-      result = deletePost(id);
+      result = deletePost(params.id || '');
     } else {
       result = { error: 'Unknown action' };
     }
-  } catch (err) {
-    result = { error: err.toString() };
-  }
 
-  // Return as JSONP if callback provided, plain JSON otherwise
-  const json = JSON.stringify(result);
-  if (callback) {
+    const json = JSON.stringify(result);
+    if (callback) {
+      return ContentService
+        .createTextOutput(callback + '(' + json + ')')
+        .setMimeType(ContentService.MimeType.JAVASCRIPT);
+    }
     return ContentService
-      .createTextOutput(callback + '(' + json + ')')
-      .setMimeType(ContentService.MimeType.JAVASCRIPT);
+      .createTextOutput(json)
+      .setMimeType(ContentService.MimeType.JSON);
+
+  } catch(err) {
+    const msg = JSON.stringify({ error: err.toString() });
+    return ContentService
+      .createTextOutput(msg)
+      .setMimeType(ContentService.MimeType.JSON);
   }
-  return ContentService
-    .createTextOutput(json)
-    .setMimeType(ContentService.MimeType.JSON);
 }
 
-// Keep doPost for direct API use
 function doPost(e) {
-  let result;
   try {
     const data = JSON.parse(e.postData.contents);
+    let result;
     if (data.action === 'addPost') result = addPost(data.name, data.url);
     else if (data.action === 'deletePost') result = deletePost(data.id);
     else result = { error: 'Unknown action' };
+    return ContentService
+      .createTextOutput(JSON.stringify(result))
+      .setMimeType(ContentService.MimeType.JSON);
   } catch(err) {
-    result = { error: err.toString() };
+    return ContentService
+      .createTextOutput(JSON.stringify({ error: err.toString() }))
+      .setMimeType(ContentService.MimeType.JSON);
   }
-  return ContentService
-    .createTextOutput(JSON.stringify(result))
-    .setMimeType(ContentService.MimeType.JSON);
 }
 
-// ── Spam Validation ─────────────────────────────────────────
 function validatePost(name, url) {
   if (!name || typeof name !== 'string') return 'Name is required.';
-  const trimmedName = name.trim();
-  if (trimmedName.length < MIN_NAME_LENGTH) return 'Name is too short. Please use your real name.';
-  if (trimmedName.length > MAX_NAME_LENGTH) return 'Name is too long.';
-  if (/^[^a-zA-Z]+$/.test(trimmedName)) return 'Name must contain letters.';
-  if (/<|>|javascript:|data:/i.test(trimmedName)) return 'Invalid characters in name.';
-  const lowerName = trimmedName.toLowerCase();
-  for (const word of BLOCKED_NAME_WORDS) {
-    if (lowerName === word) return 'Please use your real name.';
-  }
+  const n = name.trim();
+  if (n.length < MIN_NAME_LENGTH) return 'Name is too short. Please use your real name.';
+  if (n.length > MAX_NAME_LENGTH) return 'Name is too long.';
+  if (/^[^a-zA-Z]+$/.test(n)) return 'Name must contain letters.';
+  if (/<|>|javascript:|data:/i.test(n)) return 'Invalid characters in name.';
+  const lower = n.toLowerCase();
+  for (const w of BLOCKED_NAME_WORDS) { if (lower === w) return 'Please use your real name.'; }
 
   if (!url || typeof url !== 'string') return 'URL is required.';
-  const trimmedUrl = url.trim();
-  if (!trimmedUrl.startsWith('https://')) return 'Only secure (https) URLs are allowed.';
-  const isLinkedIn = LINKEDIN_PATTERNS.some(p => p.test(trimmedUrl));
-  if (!isLinkedIn) return 'Only LinkedIn post URLs are allowed (linkedin.com/posts/ or linkedin.com/feed/update/)';
-  if (trimmedUrl.length > 500) return 'URL is too long.';
-
+  const u = url.trim();
+  if (!u.startsWith('https://')) return 'Only secure (https) URLs allowed.';
+  if (!LINKEDIN_PATTERNS.some(p => p.test(u))) return 'Only LinkedIn post URLs are allowed.';
+  if (u.length > 500) return 'URL is too long.';
   return null;
 }
 
-// ── Rate Limiting ────────────────────────────────────────────
 function checkRateLimits(name, sheet) {
   const rows = sheet.getDataRange().getValues();
   const todayStart = new Date(); todayStart.setHours(0,0,0,0);
   const todayTs = todayStart.getTime();
   let totalToday = 0, nameToday = 0;
-  const lowerName = name.trim().toLowerCase();
+  const lower = name.trim().toLowerCase();
   for (let i = 1; i < rows.length; i++) {
     const ts = Number(rows[i][3]);
     if (ts >= todayTs) {
       totalToday++;
-      if (String(rows[i][1]).trim().toLowerCase() === lowerName) nameToday++;
+      if (String(rows[i][1]).trim().toLowerCase() === lower) nameToday++;
     }
   }
   if (totalToday >= MAX_POSTS_PER_DAY) return 'Daily post limit reached. Try again tomorrow.';
-  if (nameToday >= MAX_POSTS_PER_NAME) return `You've already added ${MAX_POSTS_PER_NAME} posts today.`;
+  if (nameToday >= MAX_POSTS_PER_NAME) return 'You have already added ' + MAX_POSTS_PER_NAME + ' posts today.';
   return null;
 }
-// ────────────────────────────────────────────────────────────
 
 function getSheet() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -142,11 +135,11 @@ function getPosts() {
 }
 
 function addPost(name, url) {
-  const validationError = validatePost(name, url);
-  if (validationError) return { error: validationError };
+  const err = validatePost(name, url);
+  if (err) return { error: err };
   const sheet = getSheet();
-  const rateLimitError = checkRateLimits(name, sheet);
-  if (rateLimitError) return { error: rateLimitError };
+  const rateErr = checkRateLimits(name, sheet);
+  if (rateErr) return { error: rateErr };
   const id = Date.now().toString();
   const ts = Date.now();
   sheet.appendRow([id, name.trim(), url.trim(), ts]);
