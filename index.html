@@ -211,6 +211,15 @@
   let reactedIds = JSON.parse(localStorage.getItem('reacted_ids') || '[]');
   const ownerToken = getOwnerToken();
 
+  function getMyPostIds() {
+    return JSON.parse(localStorage.getItem('my_post_ids') || '[]');
+  }
+  function addMyPostId(id) {
+    const ids = getMyPostIds();
+    ids.push(id);
+    localStorage.setItem('my_post_ids', JSON.stringify(ids));
+  }
+
   function saveReacted() { localStorage.setItem('reacted_ids', JSON.stringify(reactedIds)); }
 
   function emoji(name) {
@@ -250,7 +259,7 @@
     const cutoff = Date.now() - 3 * 24 * 60 * 60 * 1000;
     const { data, error } = await db
       .from('posts')
-      .select('id, name, url, ts, owner_token')
+      .select('id, name, url, ts')
       .gte('ts', cutoff)
       .order('ts', { ascending: true });
 
@@ -317,7 +326,10 @@
 
   function openAll() {
     if (!posts.length) { showToast('No posts yet!'); return; }
-    posts.forEach(p => window.open(p.url, '_blank'));
+    posts.forEach(p => {
+      const safeUrl = /^https:\/\//i.test(p.url) ? p.url : null;
+      if (safeUrl) window.open(safeUrl, '_blank');
+    });
   }
 
   function render() {
@@ -347,7 +359,7 @@
         const medal = pos === 1 ? '🥇' : pos === 2 ? '🥈' : pos === 3 ? '🥉' :
           `<span style="font-size:0.85rem;font-weight:800;color:#4B0082;">#${pos}</span>`;
         const reacted = reactedIds.includes(p.id);
-        const isOwner = p.owner_token === ownerToken;
+        const isOwner = getMyPostIds().includes(p.id);
         // XSS fix: only allow https:// URLs in href
         const safeUrl = /^https:\/\//i.test(p.url) ? p.url : '#';
         html += `
@@ -360,11 +372,11 @@
           </div>
           <div class="actions">
             <button style="font-size:0.75rem;padding:5px 9px;border-radius:7px;font-weight:600;cursor:pointer;border:none;font-family:inherit;background:${reacted?'#d1fae5':'#fff7ed'};color:${reacted?'#047857':'#c2410c'};"
-              onclick="toggleReacted(${p.id})">
+              onclick="toggleReacted(${+p.id || 0})">
               ${reacted ? '✅ Reacted' : '⏳ To React'}
             </button>
             <a href="${esc(safeUrl)}" target="_blank" rel="noopener noreferrer" class="btn-open">👍 Open</a>
-            ${isOwner ? `<button class="del-btn" onclick="deletePost(${p.id})" title="Remove">✕</button>` : ''}
+            ${isOwner ? `<button class="del-btn" onclick="deletePost(${+p.id || 0})" title="Remove">✕</button>` : ''}
           </div>
         </div>`;
       });
