@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>LinkedIn Post Board – IIMB GSK Women Support Group</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
@@ -183,10 +184,17 @@
 <div class="toast" id="toast"></div>
 
 <script>
-  // Clear any old setup data
-  localStorage.removeItem('gsk_script_url');
+  const SUPABASE_URL = 'https://yymncgewoseyhfnjzjff.supabase.co';
+  const SUPABASE_KEY = 'sb_publishable_63jTQCDA3DJZrreojIpXyA_Ie91Dkhk';
+  const { createClient } = supabase;
+  const db = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-  const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzb2JNBDUaRB9NMtAmDL1zGP_D8XMSk471GxoHGroD37GO_CnQJWo2zCKNkTWxxf1ZyPw/exec';
+  const LINKEDIN_PATTERNS = [
+    /^https:\/\/(www\.)?linkedin\.com\/posts\//,
+    /^https:\/\/(www\.)?linkedin\.com\/feed\/update\//,
+    /^https:\/\/(www\.)?linkedin\.com\/pulse\//,
+    /^https:\/\/lnkd\.in\//
+  ];
 
   const EMOJIS = ['🌸','🌺','💫','🌟','✨','🦋','🌈','💐','🌻','🌙'];
   let posts = [];
@@ -227,69 +235,56 @@
     setTimeout(() => t.classList.remove('show'), 3000);
   }
 
-  // ── All requests use JSONP to avoid CORS ──
-  function callScript(params) {
-    return new Promise((resolve, reject) => {
-      const cbName = 'cb_' + Date.now();
-      const script = document.createElement('script');
-      const timeout = setTimeout(() => {
-        delete window[cbName];
-        document.body.removeChild(script);
-        reject(new Error('Request timed out'));
-      }, 15000);
-
-      window[cbName] = function(data) {
-        clearTimeout(timeout);
-        delete window[cbName];
-        document.body.removeChild(script);
-        resolve(data);
-      };
-
-      const query = Object.entries({ ...params, callback: cbName })
-        .map(([k, v]) => encodeURIComponent(k) + '=' + encodeURIComponent(v))
-        .join('&');
-
-      script.src = SCRIPT_URL + '?' + query;
-      script.onerror = () => {
-        clearTimeout(timeout);
-        delete window[cbName];
-        reject(new Error('Network error'));
-      };
-      document.body.appendChild(script);
-    });
-  }
-
   async function fetchPosts() {
-    try {
-      const data = await callScript({ action: 'getPosts' });
-      posts = data.posts || [];
-      render();
-    } catch(e) {
+    const cutoff = Date.now() - 3 * 24 * 60 * 60 * 1000;
+    const { data, error } = await db
+      .from('posts')
+      .select('*')
+      .gte('ts', cutoff)
+      .order('ts', { ascending: true });
+
+    if (error) {
       document.getElementById('postsList').innerHTML =
         '<div class="empty"><div class="empty-icon">⚠️</div><p>Could not load posts. Check your connection and try refreshing.</p></div>';
+      return;
     }
+    posts = data || [];
+    render();
+
+    // clean old posts
+    await db.from('posts').delete().lt('ts', cutoff);
   }
 
   async function addPost() {
     const name = document.getElementById('nameInput').value.trim();
     const url = document.getElementById('urlInput').value.trim();
-    if (!name) { showToast('Please enter your name!'); return; }
-    if (!url.startsWith('http')) { showToast('Please paste a valid LinkedIn URL!'); return; }
+
+    if (!name || name.length < 2) { showToast('Please enter your name!'); return; }
+    if (name.length > 50) { showToast('Name is too long.'); return; }
+    if (/^[^a-zA-Z]+$/.test(name)) { showToast('Name must contain letters.'); return; }
+    if (!LINKEDIN_PATTERNS.some(p => p.test(url))) {
+      showToast('Please paste a valid LinkedIn post URL!'); return;
+    }
+
+    // rate limit check
+    const todayStart = new Date(); todayStart.setHours(0,0,0,0);
+    const { data: existing } = await db.from('posts').select('id').gte('ts', todayStart.getTime());
+    const totalToday = (existing || []).length;
+    const nameToday = (existing || []).filter(r => r.name && r.name.toLowerCase() === name.toLowerCase()).length;
+    if (totalToday >= 30) { showToast('Daily post limit reached. Try again tomorrow.'); return; }
+    if (nameToday >= 2) { showToast('You have already added 2 posts today.'); return; }
 
     const btn = document.getElementById('addBtn');
     btn.disabled = true; btn.textContent = 'Adding...';
 
-    try {
-      const data = await callScript({ action: 'addPost', name, url });
-      if (data.success) {
-        document.getElementById('urlInput').value = '';
-        showToast('✅ Post added!');
-        await fetchPosts();
-      } else {
-        showToast('❌ ' + (data.error || 'Something went wrong'));
-      }
-    } catch(e) {
-      showToast('❌ Network error. Please try again.');
+    const { error } = await db.from('posts').insert({ name, url, ts: Date.now() });
+
+    if (error) {
+      showToast('❌ Could not add post. Try again.');
+    } else {
+      document.getElementById('urlInput').value = '';
+      showToast('✅ Post added!');
+      await fetchPosts();
     }
 
     btn.disabled = false; btn.textContent = 'Add';
@@ -297,13 +292,9 @@
 
   async function deletePost(id) {
     if (!confirm('Remove this post?')) return;
-    try {
-      await callScript({ action: 'deletePost', id });
-      showToast('🗑️ Post removed.');
-      await fetchPosts();
-    } catch(e) {
-      showToast('❌ Could not remove post.');
-    }
+    await db.from('posts').delete().eq('id', id);
+    showToast('🗑️ Post removed.');
+    await fetchPosts();
   }
 
   function toggleReacted(id) {
@@ -333,7 +324,6 @@
       if (!groups[lbl]) { groups[lbl] = []; seen.push(lbl); }
       groups[lbl].push(p);
     });
-    Object.values(groups).forEach(g => g.sort((a, b) => a.ts - b.ts));
     const dayOrder = ['📅 Today', '📅 Yesterday', '📅 2 Days Ago', '📅 Older'];
     seen.sort((a, b) => dayOrder.indexOf(a) - dayOrder.indexOf(b));
 
@@ -355,11 +345,11 @@
           </div>
           <div class="actions">
             <button style="font-size:0.75rem;padding:5px 9px;border-radius:7px;font-weight:600;cursor:pointer;border:none;font-family:inherit;background:${reacted?'#d1fae5':'#fff7ed'};color:${reacted?'#047857':'#c2410c'};"
-              onclick="toggleReacted('${p.id}')">
+              onclick="toggleReacted(${p.id})">
               ${reacted ? '✅ Reacted' : '⏳ To React'}
             </button>
             <a href="${esc(p.url)}" target="_blank" class="btn-open">👍 Open</a>
-            <button class="del-btn" onclick="deletePost('${p.id}')" title="Remove">✕</button>
+            <button class="del-btn" onclick="deletePost(${p.id})" title="Remove">✕</button>
           </div>
         </div>`;
       });
